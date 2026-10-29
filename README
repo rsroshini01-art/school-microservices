@@ -1,0 +1,150 @@
+ School Management System – Microservices
+
+This project converts the original monolithic
+[School Management System](https://github.com/rsroshini01-art/school-management-system)
+(Java, Spring Boot, MySQL) into a **Spring Boot microservices architecture**.
+Every module of the original project now runs as its own service with its own database.
+The services are registered in **Eureka**, read their settings from a **Config Server**
+and are reached through one **API Gateway** that checks the login token (JWT).
+
+Architecture
+
+                         Postman / Client
+                                |
+                                v
+                  +-----------------------------+
+                  |  API Gateway  (port 8080)   |  <- checks the JWT token
+                  +-----------------------------+
+                                |  finds services by name
+                                v
+                  +-----------------------------+
+                  |  Eureka Server (port 8761)  |  <- service registry
+                  +-----------------------------+
+                                ^
+     all services register here |      all services read settings from
+                                |
+                  +-----------------------------+
+                  | Config Server (port 8888)   |
+                  +-----------------------------+
+
+  academic-service   auth-service     student-service   teacher-service
+  attendance-service exam-service     fee-service       communication-service
+     (each one has its own MySQL database)
+
+ Services
+
+| Service | Port | Database | What it does |
+
+| eureka-server | 8761 | – | Service registry (every service registers here) |
+| config-server | 8888 | – | Central configuration (database settings, JWT settings) |
+| api-gateway | 8080 | – | Single entry point, routes requests, validates the JWT token |
+| academic-service | 8081 | academic_db | Schools, academic years, terms, classes, sections, subjects |
+| auth-service | 8082 | auth_db | Register, login, refresh token, logout, users and roles |
+| student-service | 8083 | student_db | Students, parents, enrollments, CSV import, student report |
+| teacher-service | 8084 | teacher_db | Teachers, teacher-class assignment, timetable |
+| attendance-service | 8085 | attendance_db | Attendance marking, attendance report |
+| exam-service | 8086 | exam_db | Exams, exam subjects, marks and grades, grade rules, results, report card PDF, homework |
+| fee-service | 8087 | fee_db | Fee structures, fee payments, PDF receipt, fee report |
+| communication-service | 8088 | communication_db | Announcements, notifications, document upload and download |
+
+ Technologies
+
+- Java, Spring Boot 4.1
+- Spring Cloud: Eureka (service discovery), Config Server, Gateway, OpenFeign
+- Spring Data JPA, MySQL
+- JWT (jjwt) for login tokens, validated at the Gateway
+- iText for PDF generation (report card and receipt)
+- Lombok, Maven
+
+How the services talk to each other
+
+Each service owns its own database. A service never reads another service's tables.
+Instead, other modules are referenced by **id**, and a service asks the owner service
+through **OpenFeign** (found by name in Eureka) when it needs more:
+
+| Caller | Asks | Why |
+
+| attendance-service | student-service | Check that the student exists and show the student name |
+| student-service | academic-service | Check that the class exists and show the class name |
+| fee-service | student-service | Check the student for a payment, show the name on the receipt |
+| exam-service | student-service | Check the student for marks, results and report card |
+| exam-service | academic-service | Show subject names in results and report card |
+
+How to run
+
+Run the applications in this order and wait for "Started ..." each time:
+
+1. MySQL (create the 8 databases first, see below)
+2. `eureka-server` (8761)
+3. `config-server` (8888)
+4. `auth-service`, `academic-service`, `student-service`, `teacher-service`,
+   `attendance-service`, `exam-service`, `fee-service`, `communication-service`
+5. `api-gateway` (8080) last
+
+Open `http://localhost:8761` to check that all applications are registered.
+
+**Databases to create in MySQL:**
+
+ sql
+CREATE DATABASE academic_db;
+CREATE DATABASE auth_db;
+CREATE DATABASE student_db;
+CREATE DATABASE teacher_db;
+CREATE DATABASE attendance_db;
+CREATE DATABASE exam_db;
+CREATE DATABASE fee_db;
+CREATE DATABASE communication_db;
+```
+
+Tables are created automatically when each service starts.
+The database username and password for each service are in
+`config-server/.../src/main/resources/config/<service-name>.properties`.
+Change them to match your own MySQL login.
+
+Using the API through the Gateway
+
+All calls go to the Gateway on port 8080, with the service name in front of the path:
+
+
+http://localhost:8080/<service-name>/<path>
+
+1. Register: `POST /auth-service/api/auth/register` (public)
+2. Login: `POST /auth-service/api/auth/login` (public) – returns a token
+3. Every other call needs the header `Authorization: Bearer <token>`
+
+Examples:
+
+GET  http://localhost:8080/student-service/api/students
+GET  http://localhost:8080/academic-service/api/classes?academicYearId=1
+POST http://localhost:8080/attendance-service/api/attendance
+GET  http://localhost:8080/exam-service/api/results/student/1/exam/1
+GET  http://localhost:8080/exam-service/api/report-cards/student/1/exam/1   (PDF)
+GET  http://localhost:8080/fee-service/api/fee-payments/1/receipt           (PDF)
+```
+
+A request without a token, or with a wrong or expired token, is rejected with **401**.
+
+Reports
+
+The reports of the old project are now spread over the services that own the data:
+
+| Report | URL |
+
+| Students | `/student-service/api/reports/students` |
+| Attendance | `/attendance-service/api/reports/attendance` |
+| Exams | `/exam-service/api/reports/exams?examId=1` |
+| Fees | `/fee-service/api/reports/fees` |
+
+
+Notes and limitations
+
+- The role rules of the old project (`@PreAuthorize`) are not enforced yet. The Gateway
+  checks that the token is valid, but does not check the user's role.
+- A logged-out token is still accepted by the Gateway until it expires, because the
+  token blacklist belongs to auth-service.
+- The services can also be called directly on their own ports. In a real deployment only
+  the Gateway would be exposed.
+- Existence checks across services are done for the main links (student, class, subject
+  names). Some other ids (for example section id, teacher id, academic year id in an exam)
+  are stored as ids without being checked yet.
+- The database passwords and JWT secrets in the config files are for local learning only.
